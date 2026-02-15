@@ -1,4 +1,6 @@
+# 可执行文件（Windows 与 Linux 编译产物）
 *.exe
+eth-vanity-address
 *.exp
 *.lib
 *.txt

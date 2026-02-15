@@ -623,6 +623,7 @@ int main(int argc, char *argv[]) {
     char* input_deployer_address = 0;
     char* input_prefix = 0;
     char* input_suffix = 0;
+    char* output_file = 0;
 
     int num_devices = 0;
     int device_ids[10];
@@ -671,6 +672,9 @@ int main(int argc, char *argv[]) {
             for (char* p = input_suffix; *p; ++p) {
                 *p = tolower(*p);
             }
+            i += 2;
+        } else if (strcmp(argv[i], "--output") == 0 || strcmp(argv[i], "-o") == 0) {
+            output_file = argv[i + 1];
             i += 2;
         } else {
             i++;
@@ -736,6 +740,23 @@ int main(int argc, char *argv[]) {
     cudaMemcpyToSymbol(device_prefix, prefix_tmp, 64, 0, cudaMemcpyHostToDevice);
     cudaMemcpyToSymbol(device_suffix, suffix_tmp, 64, 0, cudaMemcpyHostToDevice);
 
+    // 自动生成输出文件名（如果未指定）
+    char auto_output_file[256];
+    if (!output_file && input_prefix && input_suffix) {
+        // 计算前缀和后缀中连续9的数量
+        int prefix_nines = 0;
+        for (int i = 0; i < strlen(input_prefix) && input_prefix[i] == '9'; i++) {
+            prefix_nines++;
+        }
+        int suffix_nines = 0;
+        for (int i = 0; i < strlen(input_suffix) && input_suffix[i] == '9'; i++) {
+            suffix_nines++;
+        }
+        snprintf(auto_output_file, sizeof(auto_output_file), "prefix_%d_suffix_%d.txt", prefix_nines, suffix_nines);
+        output_file = auto_output_file;
+        printf("output file: %s\n", output_file);
+    }
+
     // Debug print the chosen score_method after all logic is finalized
     printf("[DEBUG] Score method selected: %d\n", score_method);
 
@@ -751,7 +772,7 @@ int main(int argc, char *argv[]) {
     }
 
     #define nothex(n) ((n < 48 || n > 57) && (n < 65 || n > 70) && (n < 97 || n > 102))
-    _uint256 bytecode_hash;
+    _uint256 bytecode_hash = {0, 0, 0, 0, 0, 0, 0, 0};
     if (mode == 2 || mode == 3) {
         std::ifstream infile(input_file, std::ios::binary);
         if (!infile.is_open()) {
@@ -809,7 +830,7 @@ int main(int argc, char *argv[]) {
         delete[] bytecode;
     }
 
-    Address origin_address;
+    Address origin_address = {0, 0, 0, 0, 0};
     if (mode == 2 || mode == 3) {
         if (strlen(input_address) == 42) {
             input_address += 2;
@@ -834,7 +855,7 @@ int main(int argc, char *argv[]) {
         #undef round
     }
 
-    Address deployer_address;
+    Address deployer_address = {0, 0, 0, 0, 0};
     if (mode == 3) {
         if (strlen(input_deployer_address) == 42) {
             input_deployer_address += 2;
@@ -866,6 +887,17 @@ int main(int argc, char *argv[]) {
     for (int i = 0; i < num_devices; i++) {
         std::thread th(host_thread, device_ids[i], i, score_method, mode, origin_address, deployer_address, bytecode_hash);
         threads.push_back(move(th));
+    }
+
+    // 打开输出文件（如果指定了）
+    std::ofstream outfile;
+    if (output_file) {
+        outfile.open(output_file, std::ios::app); // 追加模式
+        if (!outfile.is_open()) {
+            printf("warning: cannot open output file %s\n", output_file);
+        } else {
+            printf("results will be saved to: %s\n", output_file);
+        }
     }
 
     double speeds[100];
@@ -913,10 +945,25 @@ int main(int argc, char *argv[]) {
                             Address a = addresses[i];
                             uint64_t time = (m.time - global_start_time) / 1000;
 
+                            char output_line[512];
                             if (mode == 0 || mode == 1) {
-                                printf("Elapsed: %06u Score: %02u Private Key: 0x%08x%08x%08x%08x%08x%08x%08x%08x Address: 0x%08x%08x%08x%08x%08x\n", (uint32_t)time, score, k.a, k.b, k.c, k.d, k.e, k.f, k.g, k.h, a.a, a.b, a.c, a.d, a.e);
+                                snprintf(output_line, sizeof(output_line), 
+                                    "Elapsed: %06u Score: %02u Private Key: 0x%08x%08x%08x%08x%08x%08x%08x%08x Address: 0x%08x%08x%08x%08x%08x\n", 
+                                    (uint32_t)time, score, k.a, k.b, k.c, k.d, k.e, k.f, k.g, k.h, a.a, a.b, a.c, a.d, a.e);
+                                printf("%s", output_line);
+                                if (outfile.is_open()) {
+                                    outfile << output_line;
+                                    outfile.flush();
+                                }
                             } else if (mode == 2 || mode == 3) {
-                                printf("Elapsed: %06u Score: %02u Salt: 0x%08x%08x%08x%08x%08x%08x%08x%08x Address: 0x%08x%08x%08x%08x%08x\n", (uint32_t)time, score, k.a, k.b, k.c, k.d, k.e, k.f, k.g, k.h, a.a, a.b, a.c, a.d, a.e);
+                                snprintf(output_line, sizeof(output_line), 
+                                    "Elapsed: %06u Score: %02u Salt: 0x%08x%08x%08x%08x%08x%08x%08x%08x Address: 0x%08x%08x%08x%08x%08x\n", 
+                                    (uint32_t)time, score, k.a, k.b, k.c, k.d, k.e, k.f, k.g, k.h, a.a, a.b, a.c, a.d, a.e);
+                                printf("%s", output_line);
+                                if (outfile.is_open()) {
+                                    outfile << output_line;
+                                    outfile.flush();
+                                }
                             } else {
                                 printf("Final mode%d", mode);
                             }
