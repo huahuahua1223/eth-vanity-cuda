@@ -737,22 +737,28 @@ int main(int argc, char *argv[]) {
         strncpy(suffix_tmp, input_suffix, 63);
         suffix_tmp[63] = '\0';
     }
-    cudaMemcpyToSymbol(device_prefix, prefix_tmp, 64, 0, cudaMemcpyHostToDevice);
-    cudaMemcpyToSymbol(device_suffix, suffix_tmp, 64, 0, cudaMemcpyHostToDevice);
+    // 注意：device_prefix/device_suffix 会在下面校验设备后、按设备逐一 cudaSetDevice 再复制到各设备
 
-    // 自动生成输出文件名（如果未指定）
+    // 自动生成输出文件名（如果未指定）：仅 prefix、仅 suffix、或两者都有时都生成
     char auto_output_file[256];
-    if (!output_file && input_prefix && input_suffix) {
-        // 计算前缀和后缀中连续9的数量
-        int prefix_nines = 0;
-        for (int i = 0; i < strlen(input_prefix) && input_prefix[i] == '9'; i++) {
-            prefix_nines++;
+    if (!output_file && (input_prefix || input_suffix)) {
+        if (input_prefix && input_suffix) {
+            int prefix_nines = 0;
+            for (int i = 0; i < strlen(input_prefix) && input_prefix[i] == '9'; i++) {
+                prefix_nines++;
+            }
+            int suffix_nines = 0;
+            for (int i = 0; i < strlen(input_suffix) && input_suffix[i] == '9'; i++) {
+                suffix_nines++;
+            }
+            snprintf(auto_output_file, sizeof(auto_output_file), "prefix_%d_suffix_%d.txt", prefix_nines, suffix_nines);
+        } else if (input_prefix) {
+            size_t plen = strlen(input_prefix);
+            snprintf(auto_output_file, sizeof(auto_output_file), "prefix_%zu.txt", plen);
+        } else {
+            size_t slen = strlen(input_suffix);
+            snprintf(auto_output_file, sizeof(auto_output_file), "suffix_%zu.txt", slen);
         }
-        int suffix_nines = 0;
-        for (int i = 0; i < strlen(input_suffix) && input_suffix[i] == '9'; i++) {
-            suffix_nines++;
-        }
-        snprintf(auto_output_file, sizeof(auto_output_file), "prefix_%d_suffix_%d.txt", prefix_nines, suffix_nines);
         output_file = auto_output_file;
         printf("output file: %s\n", output_file);
     }
@@ -760,7 +766,21 @@ int main(int argc, char *argv[]) {
     // Debug print the chosen score_method after all logic is finalized
     printf("[DEBUG] Score method selected: %d\n", score_method);
 
-
+    // 校验设备数量，避免对不存在的设备调用 cudaSetDevice 导致段错误
+    int device_count = 0;
+    cudaError_t err = cudaGetDeviceCount(&device_count);
+    if (err != cudaSuccess || device_count == 0) {
+        printf("[DEBUG] Exiting early due to cudaGetDeviceCount failure or no devices\n");
+        printf("No CUDA devices found or driver error.\n");
+        return 1;
+    }
+    for (int i = 0; i < num_devices; i++) {
+        if (device_ids[i] < 0 || device_ids[i] >= device_count) {
+            printf("[DEBUG] Exiting early due to invalid device id %d (valid range: 0..%d)\n", device_ids[i], device_count - 1);
+            printf("Invalid device id %d. Valid range: 0 to %d.\n", device_ids[i], device_count - 1);
+            return 1;
+        }
+    }
 
     for (int i = 0; i < num_devices; i++) {
         cudaError_t e = cudaSetDevice(device_ids[i]);
@@ -769,6 +789,9 @@ int main(int argc, char *argv[]) {
             printf("Could not detect device %d\n", device_ids[i]);
             return 1;
         }
+        // 每个设备有独立的 __constant__ 内存，需对当前设备复制 prefix/suffix
+        cudaMemcpyToSymbol(device_prefix, prefix_tmp, 64, 0, cudaMemcpyHostToDevice);
+        cudaMemcpyToSymbol(device_suffix, suffix_tmp, 64, 0, cudaMemcpyHostToDevice);
     }
 
     #define nothex(n) ((n < 48 || n > 57) && (n < 65 || n > 70) && (n < 97 || n > 102))
